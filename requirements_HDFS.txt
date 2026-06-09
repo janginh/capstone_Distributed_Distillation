@@ -1,0 +1,8 @@
+# [3060] Data Collector 의존성
+kafka-python==2.0.2
+lz4==4.3.3                  # Kafka 메시지 lz4 압축
+Pillow==10.4.0
+requests==2.32.0
+opencv-python==4.10.0.84    # 블랙박스 영상 처리
+datasets>=2.18.0            # HuggingFace streaming (--mode hf)
+huggingface_hub>=0.20.0     # datasets 의존성
