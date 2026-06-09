@@ -1,0 +1,249 @@
+version: '3.8'
+
+# =============================================================
+# [A5000 서버] 분산 KD 파이프라인 인프라
+#
+# 구조:
+#   3060 → Kafka(이미지 수신) → Shard Builder(tar 패킹) → HDFS(분산 저장)
+#   HDFS → 로컬 5 shard pull → Teacher/Student KD 학습 → shard 삭제 → 순환
+#
+# 설정 필요:
+#   EXTERNAL 리스너의 <A5000_IP>를 실제 서버 IP로 변경
+#
+# 실행: docker compose up -d
+# 종료: docker compose down
+# =============================================================
+
+x-kafka-common: &kafka-common
+  image: bitnami/kafka:3.7
+  environment: &kafka-env
+    KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: "1@kafka1:9093,2@kafka2:9093,3@kafka3:9093"
+    KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+    KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT"
+    KAFKA_CFG_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+    KAFKA_HEAP_OPTS: "-Xmx2g -Xms1g"
+    KAFKA_CFG_LOG_RETENTION_HOURS: "72"
+    KAFKA_CFG_LOG_SEGMENT_BYTES: "536870912"
+    KAFKA_CFG_NUM_PARTITIONS: "12"
+    KAFKA_CFG_DEFAULT_REPLICATION_FACTOR: "2"
+    KAFKA_CFG_MESSAGE_MAX_BYTES: "20971520"
+    KAFKA_CFG_REPLICA_FETCH_MAX_BYTES: "20971520"
+    KAFKA_CFG_NUM_IO_THREADS: "4"
+    KAFKA_CFG_NUM_NETWORK_THREADS: "3"
+    KAFKA_KRAFT_CLUSTER_ID: "kd-cluster-2gether-001"
+  deploy:
+    resources:
+      limits:
+        memory: 3G
+  networks:
+    - kd-net
+
+x-datanode-common: &datanode-common
+  image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+  environment: &hdfs-env
+    CORE_CONF_fs_defaultFS: "hdfs://namenode:8020"
+    HDFS_CONF_dfs_replication: "2"
+    HADOOP_HEAPSIZE: "1024"
+  depends_on:
+    namenode:
+      condition: service_healthy
+  deploy:
+    resources:
+      limits:
+        memory: 2G
+  networks:
+    - kd-net
+
+services:
+
+  # ==================== Kafka 3 Brokers ====================
+
+  kafka1:
+    <<: *kafka-common
+    container_name: kafka1
+    ports:
+      - "9092:9092"
+    environment:
+      <<: *kafka-env
+      KAFKA_CFG_NODE_ID: "1"
+      KAFKA_CFG_PROCESS_ROLES: "broker,controller"
+      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9094,CONTROLLER://:9093,EXTERNAL://:9092"
+      # ⚠️ <A5000_IP>를 실제 서버 IP로 변경
+      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://kafka1:9094,EXTERNAL://<A5000_IP>:9092"
+    volumes:
+      - kafka1_data:/bitnami/kafka
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  kafka2:
+    <<: *kafka-common
+    container_name: kafka2
+    ports:
+      - "9095:9095"
+    environment:
+      <<: *kafka-env
+      KAFKA_CFG_NODE_ID: "2"
+      KAFKA_CFG_PROCESS_ROLES: "broker,controller"
+      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9094,CONTROLLER://:9093,EXTERNAL://:9095"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://kafka2:9094,EXTERNAL://<A5000_IP>:9095"
+    volumes:
+      - kafka2_data:/bitnami/kafka
+    depends_on:
+      - kafka1
+
+  kafka3:
+    <<: *kafka-common
+    container_name: kafka3
+    ports:
+      - "9096:9096"
+    environment:
+      <<: *kafka-env
+      KAFKA_CFG_NODE_ID: "3"
+      KAFKA_CFG_PROCESS_ROLES: "broker,controller"
+      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9094,CONTROLLER://:9093,EXTERNAL://:9096"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://kafka3:9094,EXTERNAL://<A5000_IP>:9096"
+    volumes:
+      - kafka3_data:/bitnami/kafka
+    depends_on:
+      - kafka1
+
+  # ==================== HDFS Cluster ====================
+
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: namenode
+    ports:
+      - "9870:9870"
+      - "8020:8020"
+    environment:
+      CLUSTER_NAME: kd-cluster
+      CORE_CONF_fs_defaultFS: "hdfs://namenode:8020"
+      CORE_CONF_hadoop_http_staticuser_user: root
+      HDFS_CONF_dfs_replication: "2"
+      HDFS_CONF_dfs_namenode_datanode_registration_ip___hostname___check: "false"
+      HDFS_CONF_dfs_blocksize: "134217728"
+      HADOOP_HEAPSIZE: "2048"
+    volumes:
+      - namenode_data:/hadoop/dfs/name
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9870"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - kd-net
+
+  datanode1:
+    <<: *datanode-common
+    container_name: datanode1
+    ports: ["9864:9864"]
+    volumes: [datanode1_data:/hadoop/dfs/data]
+
+  datanode2:
+    <<: *datanode-common
+    container_name: datanode2
+    ports: ["9865:9864"]
+    volumes: [datanode2_data:/hadoop/dfs/data]
+
+  datanode3:
+    <<: *datanode-common
+    container_name: datanode3
+    ports: ["9866:9864"]
+    volumes: [datanode3_data:/hadoop/dfs/data]
+
+  # ==================== Monitoring ====================
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: kd-cluster
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "kafka1:9094,kafka2:9094,kafka3:9094"
+      JAVA_OPTS: "-Xmx256m -Xms128m"
+    depends_on:
+      kafka1:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - kd-net
+
+  # ==================== KD Trainer (A5000 × 4) ====================
+  # idle 컨테이너로 띄워두고 docker exec로 학습 시작:
+  #   docker exec -it kd-trainer torchrun \
+  #     --standalone --nproc_per_node=4 scripts/launch_kd.py \
+  #     --config configs/kd.yaml
+  trainer:
+    build:
+      context: .
+      dockerfile: Dockerfile.trainer
+    image: kd-pipeline/trainer:latest
+    container_name: kd-trainer
+    depends_on:
+      namenode:
+        condition: service_healthy
+    environment:
+      HDFS_URL: "http://namenode:9870"
+      NCCL_DEBUG: "WARN"
+      NVIDIA_VISIBLE_DEVICES: "all"
+      PYTHONPATH: "/app/scripts"
+    volumes:
+      - ./scripts:/app/scripts
+      - ./configs:/app/configs
+      - ./checkpoints:/app/checkpoints
+      - ./weights:/app/weights
+      - ./working_shards:/app/working_shards
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 4
+              capabilities: [gpu]
+    shm_size: "8gb"
+    ipc: host
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    networks:
+      - kd-net
+    working_dir: /app
+
+volumes:
+  kafka1_data:
+  kafka2_data:
+  kafka3_data:
+  namenode_data:
+  datanode1_data:
+  datanode2_data:
+  datanode3_data:
+
+networks:
+  kd-net:
+    driver: bridge
+
+# =============================================================
+# Docker 메모리: ~19.5GB + trainer / 128GB
+# 남은 메모리 → Shard Builder + Teacher/Student KD 학습 + OS
+#
+# 접속:
+#   HDFS:    http://localhost:9870
+#   Kafka:   http://localhost:8080
+#
+# 학습 시작:
+#   docker compose up -d
+#   docker exec -it kd-trainer torchrun \
+#       --standalone --nproc_per_node=4 scripts/launch_kd.py \
+#       --config configs/kd.yaml
+# =============================================================
