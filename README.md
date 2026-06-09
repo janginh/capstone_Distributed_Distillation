@@ -106,7 +106,6 @@ Backward (AMP) → grad clip → AdamW step
 
 - YOLO-World: [AILab-CVC/YOLO-World](https://github.com/AILab-CVC/YOLO-World)
 - Ultralytics: [ultralytics/ultralytics](https://github.com/ultralytics/ultralytics)
-- Soft Teacher (참고): [microsoft/SoftTeacher](https://github.com/microsoft/SoftTeacher)
 - Knowledge Distillation (Hinton 2015): [arxiv.org/abs/1503.02531](https://arxiv.org/abs/1503.02531)
 
 ---
