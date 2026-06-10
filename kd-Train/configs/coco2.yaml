@@ -1,0 +1,12 @@
+# 2-class (person, car) COCO val 평가용
+# remap_coco_to_2cls.py로 라벨 변환 후 사용
+# 이미지는 /data/coco/val2017/images에 있음 (docker mount 직접)
+
+path: /app/eval/coco2   # 반드시 절대경로 (ultralytics가 /app/datasets/ 기준 안 보게)
+train: val2017/images   # placeholder
+val:   val2017/images
+
+nc: 2
+names:
+  0: person
+  1: car

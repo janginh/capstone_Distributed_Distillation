@@ -356,6 +356,96 @@ class DataCollector:
         except Exception:
             pass
 
+    # ==================== Mode: Video folder (여러 영상) ====================
+
+    def collect_video_folder(self, video_dir, device_id="videos", domain="video",
+                             fps_sample=2, max_frames_per_video=None):
+        """
+        폴더 안의 모든 영상(.mp4/.avi/.mov/.mkv/.webm)을 순차 처리.
+        Kafka producer는 단일 인스턴스 유지하면서 영상별로 frame 추출 → Kafka.
+        영상마다 device_id에 영상명 접미사 붙여서 추적 가능.
+        """
+        import cv2
+
+        exts = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
+        videos = sorted([
+            os.path.join(video_dir, f)
+            for f in os.listdir(video_dir)
+            if Path(f).suffix.lower() in exts
+        ])
+        if not videos:
+            print(f"❌ 영상 파일이 없음: {video_dir}")
+            return
+
+        print(f"📂 영상 폴더: {video_dir}")
+        print(f"   총 영상 수: {len(videos)}개")
+        for v in videos:
+            print(f"   - {os.path.basename(v)}")
+
+        overall_start = time.time()
+        total_frames = 0
+
+        for vi, video_path in enumerate(videos):
+            vname = os.path.basename(video_path)
+            print(f"\n{'='*50}")
+            print(f"🎥 [{vi+1}/{len(videos)}] {vname}")
+            print(f"{'='*50}")
+
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                print(f"   ⚠️  열기 실패, 스킵")
+                continue
+
+            orig_fps = cap.get(cv2.CAP_PROP_FPS)
+            n_total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            duration = n_total / orig_fps if orig_fps > 0 else 0
+            interval = max(int(round(orig_fps / fps_sample)) if fps_sample > 0 else 1, 1)
+            print(f"   원본: {orig_fps:.0f}fps, {n_total:,}프레임, {duration:.0f}초")
+            print(f"   추출: {fps_sample}fps (매 {interval}프레임)")
+
+            vstart = time.time()
+            frame_idx = 0
+            extracted = 0
+            video_did = f"{device_id}_{Path(vname).stem}"
+
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                if frame_idx % interval == 0:
+                    img = Image.fromarray(frame[:, :, ::-1])  # BGR → RGB
+                    image_b64 = self._image_to_b64(img)
+                    filename = f"{Path(vname).stem}_f{frame_idx:08d}.jpg"
+                    self._send_image(image_b64, filename, video_did, domain)
+                    extracted += 1
+                    with self.stats_lock:
+                        self.stats["sent"] += 1
+
+                    if extracted % 100 == 0:
+                        el = time.time() - vstart
+                        print(f"\r   📊 {extracted:,}장 추출 ({el:.0f}s)",
+                              end="", flush=True)
+
+                    if max_frames_per_video and extracted >= max_frames_per_video:
+                        break
+
+                frame_idx += 1
+
+            cap.release()
+            total_frames += extracted
+            print(f"\n   ✅ {vname}: {extracted:,}장")
+
+        self.producer.flush()
+        elapsed = time.time() - overall_start
+        print(f"\n{'='*50}")
+        print(f"🎉 영상 폴더 처리 완료")
+        print(f"   처리 영상: {len(videos)}개")
+        print(f"   추출 프레임: {total_frames:,}장")
+        print(f"   소요 시간: {elapsed:.0f}초")
+        print(f"{'='*50}")
+        self.producer.close()
+
     # ==================== Mode: Folder ====================
 
     def collect_folder(self, image_dir, device_id="local", domain="general"):
@@ -404,7 +494,8 @@ class DataCollector:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Data Collector → Kafka")
-    parser.add_argument("--mode", required=True, choices=["cc3m", "urls", "video", "folder", "hf"])
+    parser.add_argument("--mode", required=True,
+                        choices=["cc3m", "urls", "video", "video_folder", "folder", "hf"])
     parser.add_argument("--kafka", required=True, help="A5000 Kafka 주소 (예: 192.168.0.10:9092)")
     parser.add_argument("--topic", default="raw-images")
     parser.add_argument("--workers", type=int, default=4)
@@ -416,10 +507,15 @@ if __name__ == "__main__":
     parser.add_argument("--cc3m_tsv", default=None)
     # Custom URLs
     parser.add_argument("--url_file", default=None)
-    # Video
+    # Video (single file)
     parser.add_argument("--video_path", default=None)
     parser.add_argument("--fps_sample", type=int, default=2)
-    # Folder
+    parser.add_argument("--max_frames_per_video", type=int, default=None,
+                        help="영상 1개당 최대 추출 프레임 수 (None=제한 없음)")
+    # Video folder
+    parser.add_argument("--video_dir", default=None,
+                        help="여러 영상이 있는 폴더 (재귀 X, 단일 디렉토리만)")
+    # Image folder
     parser.add_argument("--image_dir", default=None)
     # HuggingFace streaming
     parser.add_argument("--hf_dataset", default=None, help="예: pixparse/cc12m-wds")
@@ -454,6 +550,14 @@ if __name__ == "__main__":
         collector.collect_video(
             args.video_path, args.device_id or "dashcam",
             args.domain or "driving", args.fps_sample, args.max_count,
+        )
+    elif args.mode == "video_folder":
+        collector.collect_video_folder(
+            video_dir=args.video_dir,
+            device_id=args.device_id or "videos",
+            domain=args.domain or "video",
+            fps_sample=args.fps_sample,
+            max_frames_per_video=args.max_frames_per_video,
         )
     elif args.mode == "folder":
         collector.collect_folder(

@@ -1,0 +1,76 @@
+# =============================================================
+# KD 파이프라인 하이퍼파라미터
+# 사용: scripts/launch_kd.py --config configs/kd.yaml
+# =============================================================
+
+paths:
+  vocab: /app/configs/vocab_coco80.txt   # 영상 KD: person, car 2 클래스만
+  weights_dir: /app/weights
+  ckpt_dir: /app/checkpoints
+  local_shard_dir: /app/working_shards
+
+hdfs:
+  url: http://namenode:9870
+  shard_path: /shards
+  max_local_shards: 5
+  prefetch: true
+  delete_after_consume: false  # shard 보존 (재학습 가능). 디스크 부족하면 true로
+                                # true → HDFS에서도 학습 후 즉시 삭제 (steady ~5-10GB)
+                                # false → 영구 보존 (반복 실험 가능, 디스크 ↑)
+
+data:
+  imgsz: 640
+  batch_size: 16          # per-GPU
+  num_workers: 4
+  pin_memory: true
+
+teacher:
+  weights: yolov8x-worldv2.pt
+  fp16: true              # half precision eval
+
+student:
+  weights: yolov8s-worldv2.pt   # 2-class 영상 KD는 깨끗한 baseline에서 시작
+  use_amp: true                 # torch.cuda.amp
+
+kd:
+  conf_threshold: 0.5     # 2 클래스만 학습이라 임계값 약간 낮춤 → pseudo 양 ↑
+  nms_iou_threshold: 0.5  # Teacher NMS
+  max_dets_per_image: 100
+  # Ultralytics v8DetectionLoss 가중치 (소프트 KD에 그대로 사용)
+  hyp:
+    box: 7.5
+    cls: 1.0
+    dfl: 1.5
+
+  # cls loss 종류
+  cls_loss_type: bce       # 'bce' (multi-label binary, default) | 'kl' (Hinton 원조 KD)
+  temperature: 1.0         # KL 사용 시 temperature (1=일반 softmax, 4=soft, dark knowledge ↑)
+
+  # ─── Forgetting 방지 (A + B 둘 다 활용) ───
+  freeze_backbone: true      # A. backbone 동결 → visual feature 보존
+  freeze_layers: 10          #    YOLOv8 backbone = model.0~9 (10개 레이어)
+
+  use_reference: true        # B. 원본 student를 reference로 → drift 방지
+  reference_weight: 0.5      #    λ: 0~1 (높을수록 원본에 더 묶임)
+  reference_loss: feature    #    'feature' (MSE on neck feature) 또는 'logit' (cls KL)
+
+optimizer:
+  name: AdamW
+  lr: 5.0e-5              # 1e-4 → 5e-5: fine-tune엔 더 보수적
+  weight_decay: 5.0e-4
+  betas: [0.9, 0.999]
+
+scheduler:
+  warmup_steps: 500       # 200 → 500: 시작 step의 큰 gradient 완충
+
+train:
+  ckpt_every_n_shards: 5  # 1 epoch = HDFS 전체 1바퀴 가정
+  ckpt_keep_last_n: 3     # 최근 N개 .pt만 유지 (나머지 자동 삭제)
+  log_every: 20
+  seed: 42
+  grad_clip: 10.0
+
+ddp:
+  backend: nccl
+  master_addr: "127.0.0.1"
+  master_port: "29500"

@@ -1,0 +1,40 @@
+person
+bicycle
+car
+motorcycle
+bus
+truck
+train
+boat
+airplane
+traffic light
+traffic sign
+stop sign
+fire hydrant
+parking meter
+bench
+crosswalk
+pothole
+road marking
+construction cone
+barrier
+bird
+cat
+dog
+horse
+sheep
+cow
+backpack
+handbag
+umbrella
+suitcase
+ball
+kite
+skateboard
+surfboard
+bottle
+cup
+chair
+laptop
+cell phone
+book
