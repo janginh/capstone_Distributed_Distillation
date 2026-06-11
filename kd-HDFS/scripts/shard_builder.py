@@ -2,7 +2,7 @@
 =============================================================
 [A5000] Shard Builder
 - Kafka에서 이미지 수신 → 1GB tar shard로 패킹 → HDFS 저장
-- 실행: python scripts/shard_builder.py --kafka <IP>:9092
+- 실행: python scripts/shard_builder.py --kafka <A5000_IP>:9092
 =============================================================
 """
 
